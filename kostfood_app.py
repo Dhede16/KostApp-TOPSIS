@@ -22,7 +22,7 @@ FOODS = [
     {"id": 5,  "nama": "Roti Bakar Coklat",     "jenis": "ringan",     "harga": 8000,  "jarak": 0.2, "rating": 4.3},
     {"id": 6,  "nama": "Soto Ayam",             "jenis": "berat",      "harga": 13000, "jarak": 0.6, "rating": 4.5},
     {"id": 7,  "nama": "Salad Sayur",           "jenis": "vegetarian", "harga": 15000, "jarak": 1.2, "rating": 4.1},
-    {"id": 8,  "nama": "Indomie Goreng Jumbo",  "jenis": "berat",     "harga": 10000, "jarak": 0.1, "rating": 3.9},
+    {"id": 8,  "nama": "Indomie Goreng Jumbo",  "jenis": "berat",      "harga": 10000, "jarak": 0.1, "rating": 3.9},
     {"id": 9,  "nama": "Gado-Gado",             "jenis": "vegetarian", "harga": 12000, "jarak": 0.7, "rating": 4.4},
     {"id": 10, "nama": "Nasi Padang",           "jenis": "berat",      "harga": 22000, "jarak": 1.0, "rating": 4.9},
     {"id": 11, "nama": "Martabak Mini",         "jenis": "ringan",     "harga": 7000,  "jarak": 0.3, "rating": 4.0},
@@ -37,52 +37,102 @@ FOODS = [
     {"id": 20, "nama": "Ayam Bakar Madu",       "jenis": "berat",      "harga": 20000, "jarak": 0.9, "rating": 4.8},
 ]
 
-# Skor numerik untuk kriteria Jenis (benefit: semakin tinggi semakin baik)
 JENIS_SCORE = {"cepat saji": 0.7, "berat": 1.0, "ringan": 0.5, "vegetarian": 0.8}
+
+# ─────────────────────────────────────────────
+#  INISIALISASI SESSION STATE BOBOT
+# ─────────────────────────────────────────────
+KEYS = ["w_harga", "w_jarak", "w_rating", "w_jenis"]
+DEFAULTS = [30, 25, 30, 15]
+
+for key, default in zip(KEYS, DEFAULTS):
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+# ─────────────────────────────────────────────
+#  LOGIKA RESCALE BOBOT (selalu total = 100)
+# ─────────────────────────────────────────────
+def rescale_weights(changed_key: str, new_val: int):
+    """
+    Ketika slider `changed_key` diubah ke `new_val`:
+    1. Kunci nilai slider yang diubah.
+    2. Hitung sisa = 100 - new_val.
+    3. Distribusikan sisa secara proporsional ke 3 slider lainnya.
+       Jika semua slider lain = 0, bagi rata.
+    """
+    other_keys = [k for k in KEYS if k != changed_key]
+    old_others_total = sum(st.session_state[k] for k in other_keys)
+
+    st.session_state[changed_key] = new_val
+    remaining = 100 - new_val
+
+    if remaining < 0:
+        remaining = 0
+
+    if old_others_total == 0:
+        # Bagi rata jika semua slider lain nol
+        per = remaining // len(other_keys)
+        leftovers = remaining - per * len(other_keys)
+        for i, k in enumerate(other_keys):
+            st.session_state[k] = per + (1 if i < leftovers else 0)
+    else:
+        # Proporsional terhadap nilai lama masing-masing
+        new_others = []
+        for k in other_keys:
+            scaled = round(st.session_state[k] / old_others_total * remaining)
+            new_others.append(max(0, scaled))
+
+        # Koreksi rounding agar totalnya pas
+        diff = remaining - sum(new_others)
+        # Tambah/kurangi diff ke slider terbesar di antara others
+        if diff != 0:
+            idx_max = new_others.index(max(new_others))
+            new_others[idx_max] += diff
+            new_others[idx_max] = max(0, new_others[idx_max])
+
+        for k, v in zip(other_keys, new_others):
+            st.session_state[k] = v
+
+
+# Callback untuk setiap slider
+def on_harga():
+    rescale_weights("w_harga", st.session_state["_w_harga"])
+
+def on_jarak():
+    rescale_weights("w_jarak", st.session_state["_w_jarak"])
+
+def on_rating():
+    rescale_weights("w_rating", st.session_state["_w_rating"])
+
+def on_jenis():
+    rescale_weights("w_jenis", st.session_state["_w_jenis"])
 
 
 # ─────────────────────────────────────────────
 #  FUNGSI TOPSIS
 # ─────────────────────────────────────────────
 def run_topsis(data, w_harga, w_jarak, w_rating, w_jenis):
-    """
-    TOPSIS — 6 langkah utama:
-    1. Buat matriks keputusan (X)
-    2. Normalisasi matriks → R
-    3. Bobot matriks ternormalisasi → V
-    4. Tentukan solusi ideal positif (A+) dan negatif (A-)
-    5. Hitung jarak Euclidean D+ dan D-
-    6. Hitung Closeness Coefficient (CC), lalu ranking
-    """
     weights = np.array([w_harga, w_jarak, w_rating, w_jenis])
 
-    # === LANGKAH 1: Matriks keputusan ===
     X = np.array([
         [f["harga"], f["jarak"], f["rating"], JENIS_SCORE[f["jenis"]]]
         for f in data
     ], dtype=float)
 
-    # === LANGKAH 2: Normalisasi (Vector Normalization) ===
     norm = np.sqrt((X ** 2).sum(axis=0))
-    norm[norm == 0] = 1          # hindari pembagian nol
+    norm[norm == 0] = 1
     R = X / norm
 
-    # === LANGKAH 3: Matriks terbobot ===
     V = R * weights
 
-    # === LANGKAH 4: Solusi ideal ===
-    # Benefit  = semakin besar semakin baik  → rating, jenis
-    # Cost     = semakin kecil semakin baik  → harga, jarak
-    is_benefit = np.array([False, False, True, True])   # [harga, jarak, rating, jenis]
+    is_benefit = np.array([False, False, True, True])
 
     A_pos = np.where(is_benefit, V.max(axis=0), V.min(axis=0))
     A_neg = np.where(is_benefit, V.min(axis=0), V.max(axis=0))
 
-    # === LANGKAH 5: Jarak Euclidean ===
     D_pos = np.sqrt(((V - A_pos) ** 2).sum(axis=1))
     D_neg = np.sqrt(((V - A_neg) ** 2).sum(axis=1))
 
-    # === LANGKAH 6: Closeness Coefficient & ranking ===
     CC = D_neg / (D_pos + D_neg + 1e-10)
 
     results = []
@@ -106,18 +156,17 @@ def run_topsis(data, w_harga, w_jarak, w_rating, w_jenis):
 
 
 # ─────────────────────────────────────────────
-#  HEADER APLIKASI
+#  HEADER
 # ─────────────────────────────────────────────
 st.title("🍜 KostFood — Sistem Rekomendasi Makanan")
 st.caption("Algoritma TOPSIS (Technique for Order Preference by Similarity to Ideal Solution) · Kelompok 9")
 st.divider()
 
 # ─────────────────────────────────────────────
-#  SIDEBAR — INPUT PENGGUNA
+#  SIDEBAR — FILTER
 # ─────────────────────────────────────────────
 st.sidebar.header("⚙️ Preferensi Kamu")
 
-# --- Filter ---
 st.sidebar.subheader("Filter")
 filter_jenis = st.sidebar.selectbox(
     "Jenis Makanan",
@@ -125,39 +174,78 @@ filter_jenis = st.sidebar.selectbox(
 )
 filter_harga = st.sidebar.selectbox(
     "Maks. Harga",
-    {"Semua Harga": 999999, "≤ Rp 15.000": 15000, "≤ Rp 25.000": 25000, "≤ Rp 40.000": 40000}
+    ["Semua Harga", "≤ Rp 15.000", "≤ Rp 25.000", "≤ Rp 40.000"]
 )
-# Ambil nilai numerik dari pilihan harga
 harga_map = {"Semua Harga": 999999, "≤ Rp 15.000": 15000, "≤ Rp 25.000": 25000, "≤ Rp 40.000": 40000}
 max_harga = harga_map[filter_harga]
 
-# --- Bobot Kriteria ---
+# ─────────────────────────────────────────────
+#  SIDEBAR — BOBOT (selalu total = 100%)
+# ─────────────────────────────────────────────
 st.sidebar.divider()
-st.sidebar.subheader("Bobot Kriteria (total = 100)")
-st.sidebar.caption("Atur seberapa penting setiap kriteria bagimu.")
+st.sidebar.subheader("Bobot Kriteria")
+st.sidebar.caption("Geser salah satu slider — yang lain otomatis menyesuaikan agar total tetap **100%**.")
 
-w_harga  = st.sidebar.slider("💰 Harga (cost — lebih murah lebih baik)",   0, 100, 30)
-w_jarak  = st.sidebar.slider("📍 Jarak (cost — lebih dekat lebih baik)",   0, 100, 25)
-w_rating = st.sidebar.slider("⭐ Rating (benefit — lebih tinggi lebih baik)", 0, 100, 30)
-w_jenis  = st.sidebar.slider("🍽️ Jenis (benefit — sesuai preferensi)",      0, 100, 15)
+# Render 4 slider dengan nilai dari session_state
+# Gunakan key tersendiri (_w_xxx) lalu sync ke session_state via callback
+st.sidebar.slider(
+    "💰 Harga (cost — lebih murah lebih baik)",
+    min_value=0, max_value=100, step=1,
+    value=st.session_state["w_harga"],
+    key="_w_harga",
+    on_change=on_harga,
+)
+st.sidebar.slider(
+    "📍 Jarak (cost — lebih dekat lebih baik)",
+    min_value=0, max_value=100, step=1,
+    value=st.session_state["w_jarak"],
+    key="_w_jarak",
+    on_change=on_jarak,
+)
+st.sidebar.slider(
+    "⭐ Rating (benefit — lebih tinggi lebih baik)",
+    min_value=0, max_value=100, step=1,
+    value=st.session_state["w_rating"],
+    key="_w_rating",
+    on_change=on_rating,
+)
+st.sidebar.slider(
+    "🍽️ Jenis (benefit — sesuai preferensi)",
+    min_value=0, max_value=100, step=1,
+    value=st.session_state["w_jenis"],
+    key="_w_jenis",
+    on_change=on_jenis,
+)
 
+# Ambil nilai final dari session_state
+w_harga  = st.session_state["w_harga"]
+w_jarak  = st.session_state["w_jarak"]
+w_rating = st.session_state["w_rating"]
+w_jenis  = st.session_state["w_jenis"]
 total_bobot = w_harga + w_jarak + w_rating + w_jenis
-st.sidebar.info(f"Total bobot: **{total_bobot}%**")
 
-# Tombol jalankan
+# Tampilkan total (harusnya selalu 100)
+st.sidebar.success(f"✅ Total bobot: **{total_bobot}%**")
+
+# Tombol reset bobot ke default
+if st.sidebar.button("🔄 Reset Bobot ke Default", use_container_width=True):
+    for key, default in zip(KEYS, DEFAULTS):
+        st.session_state[key] = default
+    st.rerun()
+
+st.sidebar.divider()
+
+# Tombol cari
 run_btn = st.sidebar.button("🔍 Cari Rekomendasi", type="primary", use_container_width=True)
-
 
 # ─────────────────────────────────────────────
 #  MAIN — HASIL
 # ─────────────────────────────────────────────
 if run_btn:
-    # Validasi bobot
     if total_bobot == 0:
         st.warning("⚠️ Atur setidaknya satu bobot kriteria sebelum mencari.")
         st.stop()
 
-    # Filter data
     filtered = [
         f for f in FOODS
         if (filter_jenis == "Semua Jenis" or f["jenis"] == filter_jenis)
@@ -168,7 +256,6 @@ if run_btn:
         st.error("😔 Tidak ada makanan yang sesuai filter. Coba perluas kriteria.")
         st.stop()
 
-    # Normalisasi bobot agar total = 1
     total = w_harga + w_jarak + w_rating + w_jenis
     ranked = run_topsis(
         filtered,
@@ -180,7 +267,6 @@ if run_btn:
 
     top = ranked[0]
 
-    # ── Ringkasan ──
     st.subheader("🏆 Hasil Rekomendasi")
     st.metric("Rekomendasi Terbaik", top["nama"])
     col1, col2, col3 = st.columns(3)
@@ -190,7 +276,6 @@ if run_btn:
 
     st.divider()
 
-    # ── Tabel lengkap hasil ranking ──
     st.subheader("📊 Tabel Ranking Semua Alternatif")
     df_rank = pd.DataFrame([{
         "Rank":         r["rank"],
@@ -205,14 +290,10 @@ if run_btn:
 
     st.divider()
 
-    # ── Detail langkah perhitungan TOPSIS ──
     st.subheader("📐 Detail Perhitungan TOPSIS")
 
     with st.expander("Langkah 1 — Matriks Keputusan (X)", expanded=False):
-        st.markdown("""
-        Setiap baris = satu alternatif makanan.
-        Setiap kolom = satu kriteria (Harga, Jarak, Rating, Jenis).
-        """)
+        st.markdown("Setiap baris = satu alternatif makanan. Setiap kolom = satu kriteria.")
         df_x = pd.DataFrame([{
             "Makanan":  r["nama"],
             "Harga":    r["harga"],
@@ -223,17 +304,13 @@ if run_btn:
         st.dataframe(df_x, use_container_width=True)
 
     with st.expander("Langkah 2 — Normalisasi Matriks (R)", expanded=False):
-        st.markdown(r"""
-        Formula: $r_{ij} = \dfrac{x_{ij}}{\sqrt{\sum_{i} x_{ij}^2}}$
-
-        Tujuan: menyamakan skala antar kriteria yang berbeda satuan.
-        """)
+        st.markdown(r"Formula: $r_{ij} = \dfrac{x_{ij}}{\sqrt{\sum_{i} x_{ij}^2}}$")
         df_r = pd.DataFrame([{
-            "Makanan":       r["nama"],
-            "R_Harga":       r["R_harga"],
-            "R_Jarak":       r["R_jarak"],
-            "R_Rating":      r["R_rating"],
-            "R_Jenis":       r["R_jenis"],
+            "Makanan":  r["nama"],
+            "R_Harga":  r["R_harga"],
+            "R_Jarak":  r["R_jarak"],
+            "R_Rating": r["R_rating"],
+            "R_Jenis":  r["R_jenis"],
         } for r in ranked], index=range(1, len(ranked)+1))
         st.dataframe(df_r, use_container_width=True)
 
@@ -280,7 +357,6 @@ if run_btn:
     st.success(f"✅ Rekomendasi selesai! Ditemukan {len(ranked)} alternatif.")
 
 else:
-    # Tampilan awal sebelum tombol ditekan
     st.info("👈 Atur preferensi di sidebar, lalu tekan **Cari Rekomendasi**.")
 
     st.subheader("ℹ️ Tentang Metode TOPSIS")
